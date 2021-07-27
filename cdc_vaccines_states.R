@@ -140,18 +140,7 @@ df <- df_merged %>%
   select(Admin_Per_100K, p_white, p_black, p_asian, p_other_race, p_hispanic, income, NAME)
 
 
-
-# doesn't really make sense to split because each row is a state...
-initial_df <- initial_split(df_merged, prop = 0.65)
-
-test <- testing(initial_df)
-train <- training(initial_df)
-
-train <- train %>% 
-  sf::st_drop_geometry() %>%
-  tibble()
-
-train_fold <- train %>%
+train_fold <- df %>%
   vfold_cv(v = 5)
 
 
@@ -170,19 +159,115 @@ grid_control <- control_grid(verbose = TRUE,
                              extract = extract_model)
 
 
+lin_rec <- recipe(Admin_Per_100K ~ p_white + p_black + p_asian + p_hispanic + income,
+                  data = df) %>%
+  #step_interact(terms = ~ income*starts_with("p_")) %>%
+  step_ns(income, deg_free = 2) %>%
+  step_normalize(all_numeric(), -all_outcomes())
+
+
+# create workflow
+lin_wk <- workflow() %>%
+  add_recipe(lin_rec) %>%
+  add_model(reg_lm_spec)
+
+
+# train model
+lin_tune <- lin_wk %>%
+  tune_grid(train_fold, 
+            metrics = metric,
+            control = control_grid(save_pred = TRUE,
+                                   verbose = TRUE))
+
+lin_tune %>%
+  collect_metrics() %>%
+  arrange(mean)
+
+# plot of tuning parameters
+lin_tune %>%
+  collect_metrics() %>%
+  mutate(penalty = log(penalty)) %>%
+  pivot_longer(c(penalty, mixture), names_to = "param", values_to = "value") %>%
+  ggplot(aes(value, mean, color = param)) +
+  geom_point() +
+  geom_line() + 
+  facet_wrap(~param, scales = "free") 
+
+# easier plot of tuning params but not as beautiful 
+autoplot(lin_tune)
+
+
+
+lin_best <- lin_wk %>%
+  finalize_workflow(select_best(lin_tune)) %>%
+  fit(df)
+
+lin_best %>%
+  last_fit(initial_df) %>%
+  collect_metrics()
+  
+# get ceofs
+lin_best %>%
+  extract_fit_parsnip() %>%
+  pluck("fit") %>%
+  coef(s = 0.1)
+
+# another way
+lin_best %>%
+  extract_fit_parsnip() %>%
+  tidy()
+  
+  
+# plot variable importance
+lin_best %>%
+  extract_fit_parsnip() %>% 
+  vip()
+
+# attach data with predicitons
+df_pred <- lin_best %>%
+  augment(df)
+
+df_pred %>%
+  ggplot(aes(Admin_Per_100K, .pred)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  labs(title = "True vs Predicted Values",
+       x = "Administerd Shots per 100k",
+       y = "predicted values")
+
+
+
+df_merged %>%
+  left_join(df_pred, by = c("NAME" = "NAME")) %>%
+  ggplot(aes(fill = .pred)) +
+  geom_sf() +
+  scale_fill_gradient()
+
+
+# Test on test dataset and get metrics of evaluation.
+lin_best %>% 
+  augment(test) %>%
+  metrics(Admin_Per_100K, .pred)
+  
 
 # Xgboost Time ------------------------------------------------------------
 
 set.seed(2021)
 # Xgboost Regression
 xgboost_spec <-
-  boost_tree(tree_depth = tune(), learn_rate = tune(), min_n = tune())  %>%
+  boost_tree(
+    tree_depth = tune(),
+    trees = 1000,
+    learn_rate = tune(),
+    min_n = tune(), 
+    mtry = tune()
+  )  %>%
   set_engine('xgboost') %>%
   set_mode('regression')
 
 ## xg boost recipe
 xg_rec <- recipe(Admin_Per_100K ~ p_white + p_black + p_asian + p_hispanic + income, data = df) %>%
-  step_normalize(all_numeric(), -all_outcomes())
+  step_normalize(all_numeric_predictors())
   #step_ns(income, deg_free = tune())
   #step_dummy(NAME)
 #step_interact(terms = ~ income:starts_with("p_")) %>%
@@ -199,6 +284,16 @@ xg_tune <- xg_wf %>%
             metrics = metric,
             control = grid_control)
 
+# plot tuning params
+xg_tune %>%
+  collect_metrics() %>%
+  mutate(learn_rate = log(learn_rate)) %>%
+  pivot_longer(c(mtry, min_n, tree_depth, learn_rate), names_to = "param", values_to = "value") %>%
+  ggplot(aes(value, mean, color = param)) +
+  geom_point() +
+  geom_line() + 
+  facet_wrap(~param, scales = "free") 
+
 
 autoplot(xg_tune)
 
@@ -213,7 +308,7 @@ xg_wf_best <- xg_wf %>%
 xg_wf_best <- xg_wf_best %>%
   fit(train) 
 
-xg_wf_best
+
 
 xg_wf_best %>%
   last_fit(initial_df, metrics = metric) %>%
@@ -242,13 +337,10 @@ df_merged %>%
   ggeasy::easy_center_title()
 
 
-
-
-vip::vip(xg_wf_best %>% pull_workflow_fit())
-
 xg_wf_best %>%
-  pull_workflow_fit() %>%
-  vip(geom = "col") + theme_minimal()
+  extract_fit_parsnip() %>%
+  vip(geom = "col") +
+  theme_minimal()
 
 
 
