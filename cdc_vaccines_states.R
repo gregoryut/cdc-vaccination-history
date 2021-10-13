@@ -40,7 +40,7 @@ colnames_df <- tibble(colnames = df %>%
 
 
 # If the field types aren’t the same as those in the cache, then stop the script
-if (!all_equal(colnames_df, (read_csv(here("data", "fields.csv"))))) {
+if (isTRUE(all_equal(colnames_df, (read_csv(here("data", "fields.csv")))))) {
   # Write out new fields into a cache (ie a csv)
   colnames_df %>%
     write_csv(here("data", "fields.csv"))
@@ -202,9 +202,6 @@ lin_best <- lin_wk %>%
   finalize_workflow(select_best(lin_tune)) %>%
   fit(df)
 
-lin_best %>%
-  last_fit(initial_df) %>%
-  collect_metrics()
   
 # get ceofs
 lin_best %>%
@@ -243,21 +240,17 @@ df_merged %>%
   geom_sf() +
   scale_fill_gradient()
 
-
-# Test on test dataset and get metrics of evaluation.
-lin_best %>% 
-  augment(test) %>%
-  metrics(Admin_Per_100K, .pred)
   
 
 # Xgboost Time ------------------------------------------------------------
 
 set.seed(2021)
+
 # Xgboost Regression
 xgboost_spec <-
   boost_tree(
     tree_depth = tune(),
-    trees = 1000,
+    trees = 1200,
     learn_rate = tune(),
     min_n = tune(), 
     mtry = tune()
@@ -266,12 +259,10 @@ xgboost_spec <-
   set_mode('regression')
 
 ## xg boost recipe
-xg_rec <- recipe(Admin_Per_100K ~ p_white + p_black + p_asian + p_hispanic + income, data = df) %>%
-  step_normalize(all_numeric_predictors())
-  #step_ns(income, deg_free = tune())
-  #step_dummy(NAME)
-#step_interact(terms = ~ income:starts_with("p_")) %>%
-#step_nzv(all_predictors())
+xg_rec <- recipe(Admin_Per_100K ~ p_white + p_black + p_asian + p_hispanic + income + NAME,
+                 data = df) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
 
 
 xg_wf <- workflow() %>%
@@ -306,18 +297,7 @@ xg_wf_best <- xg_wf %>%
   finalize_workflow(select_best(xg_tune))
 
 xg_wf_best <- xg_wf_best %>%
-  fit(train) 
-
-
-
-xg_wf_best %>%
-  last_fit(initial_df, metrics = metric) %>%
-  collect_metrics()
-
-
-xg_wf_best %>%
-  augment(test) %>%
-  metrics(Admin_Per_100K, .pred)
+  fit(df) 
 
 
 
@@ -341,7 +321,6 @@ xg_wf_best %>%
   extract_fit_parsnip() %>%
   vip(geom = "col") +
   theme_minimal()
-
 
 
 
